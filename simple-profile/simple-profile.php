@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Profile Insights Pro
- * Description: User dashboard with Karma, AJAX pagination, wpDiscuz Subscriptions, and Full WP Profile Editing.
- * Version:     4.4
+ * Description: User dashboard with Karma, AJAX pagination, wpDiscuz Subscriptions, Author Stats, and Profile Editing.
+ * Version:     4.5
  * Author:      cFunkz
  */
 
@@ -10,13 +10,13 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class DevProfileInsightsPro {
 
-    private $per_page            = 6;
+    private $per_page           = 6;
     private $pw_max_attempts     = 3;    // max password changes per window
     private $pw_window_seconds   = 3600; // 1 hour
     private $stamping_vote       = false; // re-entrancy guard for stamp_vote_time
 
     public function __construct() {
-        add_shortcode( 'user_insights',               [ $this, 'render_shortcode' ] );
+        add_shortcode( 'user_insights',             [ $this, 'render_shortcode' ] );
         add_action(    'wp_enqueue_scripts',          [ $this, 'enqueue_assets' ] );
         add_action(    'wp_ajax_dpi_load_more',       [ $this, 'ajax_load_more' ] );
         add_action(    'wp_ajax_dpi_update_profile',  [ $this, 'ajax_update_profile' ] );
@@ -24,6 +24,28 @@ class DevProfileInsightsPro {
         // Stamp exact vote time so it can be sorted correctly in the feed.
         add_action( 'updated_comment_meta', [ $this, 'stamp_vote_time' ], 10, 4 );
         add_action( 'added_comment_meta',   [ $this, 'stamp_vote_time' ], 10, 4 );
+
+        // Enforce Author Notification Settings (WordPress Core Hook)
+        add_filter( 'notify_post_author', [ $this, 'enforce_comment_notifications' ], 10, 2 );
+    }
+
+    // ---------------------------------------------------------------
+    // Author Setting Hooks
+    // ---------------------------------------------------------------
+
+    public function enforce_comment_notifications( $maybe_notify, $comment_id ) {
+        $comment = get_comment( $comment_id );
+        if ( ! $comment ) return $maybe_notify;
+        
+        $post = get_post( $comment->comment_post_ID );
+        if ( ! $post ) return $maybe_notify;
+
+        $notify_setting = get_user_meta( $post->post_author, 'dpi_notify_new_comments', true );
+        
+        if ( $notify_setting === '0' ) {
+            return false;
+        }
+        return $maybe_notify;
     }
 
     public function stamp_vote_time( $meta_id, $comment_id, $meta_key, $meta_value ) {
@@ -62,6 +84,19 @@ class DevProfileInsightsPro {
         ) );
     }
 
+    private function get_author_word_count( $user_id ) {
+        global $wpdb;
+        $posts = $wpdb->get_col( $wpdb->prepare( 
+            "SELECT post_content FROM {$wpdb->posts} WHERE post_author = %d AND post_status = 'publish' AND post_type = 'post'", 
+            $user_id 
+        ) );
+        $count = 0;
+        foreach ( $posts as $content ) {
+            $count += str_word_count( strip_tags( $content ) );
+        }
+        return $count;
+    }
+
     private function get_activity( $user_id, $page = 0 ) {
         global $wpdb;
         $items = [];
@@ -87,7 +122,6 @@ class DevProfileInsightsPro {
         }
 
         $own_ids = $wpdb->get_col( $wpdb->prepare( "SELECT comment_ID FROM {$wpdb->comments} WHERE user_id = %d LIMIT 500", $user_id ) );
-
         if ( $own_ids ) {
             $ph = implode( ',', array_map( 'intval', $own_ids ) );
             $replies = $wpdb->get_results( $wpdb->prepare(
@@ -103,7 +137,23 @@ class DevProfileInsightsPro {
             }
         }
 
+        $author_comments = $wpdb->get_results( $wpdb->prepare(
+            "SELECT c.comment_ID, c.comment_post_ID, c.comment_content, c.comment_date_gmt
+             FROM   {$wpdb->comments} c
+             INNER JOIN {$wpdb->posts} p ON c.comment_post_ID = p.ID
+             WHERE  p.post_author = %d
+               AND  c.user_id != %d
+               AND  c.comment_approved = '1'
+             ORDER  BY c.comment_date_gmt DESC LIMIT 50",
+            $user_id, $user_id
+        ) );
+
+        foreach ( $author_comments as $ac ) {
+            $items[] = [ 'type' => 'author_comment', 'sort_time' => $ac->comment_date_gmt, 'data' => $ac ];
+        }
+
         usort( $items, fn( $a, $b ) => strcmp( $b['sort_time'], $a['sort_time'] ) );
+        
         $offset = max( 0, (int) $page ) * $this->per_page;
         return array_slice( $items, $offset, $this->per_page );
     }
@@ -153,6 +203,8 @@ class DevProfileInsightsPro {
         $activities    = $this->get_activity( $user->ID, 0 );
         $subscriptions = $this->get_wpdiscuz_subscriptions( $user->user_email, 0 );
         $rated         = $this->get_rated_posts( $user->ID, 0 );
+        
+        $is_author     = current_user_can( 'edit_posts' );
 
         ob_start(); ?>
         <div class="dpi-wrap" id="dpi-profile" data-nonce="<?php echo esc_attr( wp_create_nonce( 'dpi_nonce' ) ); ?>">
@@ -176,12 +228,15 @@ class DevProfileInsightsPro {
                 <button class="dpi-tab-btn" data-target="dpi-tab-subs">Subscriptions</button>
                 <button class="dpi-tab-btn" data-target="dpi-tab-ratings">Ratings</button>
                 <button class="dpi-tab-btn" data-target="dpi-tab-settings">Settings</button>
+                <?php if ( $is_author ) : ?>
+                    <button class="dpi-tab-btn" data-target="dpi-tab-author-settings">Statistics</button>
+                <?php endif; ?>
             </div>
 
             <div class="dpi-body">
                 
                 <div id="dpi-tab-activity" class="dpi-tab-content active">
-                    <h4 class="dpi-sec-label">Recent wpDiscuz Activity</h4>
+                    <h4 class="dpi-sec-label">Recent Activity</h4>
                     <div id="dpi-comments-list">
                         <?php if ( $activities ) {
                             foreach ( $activities as $a ) $this->render_item( $a );
@@ -205,7 +260,7 @@ class DevProfileInsightsPro {
                 </div>
 
                 <div id="dpi-tab-ratings" class="dpi-tab-content">
-                    <h4 class="dpi-sec-label">My Product Ratings</h4>
+                    <h4 class="dpi-sec-label">My Ratings</h4>
                     <div id="dpi-rated-list">
                         <?php if ( $rated ) {
                             foreach ( $rated as $r ) $this->render_rated( $r );
@@ -238,14 +293,47 @@ class DevProfileInsightsPro {
                     </form>
                 </div>
 
+                <?php if ( $is_author ) : 
+                    $total_posts = count_user_posts( $user->ID, 'post', true );
+                    $word_count  = $this->get_author_word_count( $user->ID );
+                    $read_time   = ceil( $word_count / 200 ); 
+                    
+                    $notify_comments = get_user_meta( $user->ID, 'dpi_notify_new_comments', true ) !== '0';
+                ?>
+                <div id="dpi-tab-author-settings" class="dpi-tab-content">
+                    
+                    <div class="dpi-author-stats-box" style="margin-bottom: 24px; padding: 18px; background: rgba(99,102,241,0.08); border-radius: 10px; border: 1px solid rgba(99,102,241,0.2);">
+                        <h4 class="dpi-sec-label" style="margin-bottom: 12px;">Your Writing Statistics</h4>
+                        <div class="dpi-stats" style="border-bottom: none;">
+                            <div class="dpi-stat"><strong><?php echo esc_html( $total_posts ); ?></strong><span>Total Posts</span></div>
+                            <div class="dpi-stat"><strong><?php echo esc_html( number_format($word_count) ); ?></strong><span>Words Written</span></div>
+                            <div class="dpi-stat"><strong><?php echo esc_html( $read_time ); ?>m</strong><span>Read Time</span></div>
+                        </div>
+                        <div style="margin-top: 15px; text-align: center;">
+                            <a href="<?php echo esc_url( admin_url('post-new.php') ); ?>" style="display: inline-block; width: auto; text-decoration: none; padding: 10px 24px;">➕ Add New Post</a>
+                        </div>
+                    </div>
+
+                    <form id="dpi-author-settings-form">
+                        <input type="hidden" name="dpi_author_settings_submitted" value="1">
+                        
+                        <h4 class="dpi-sec-label">Author Preferences</h4>
+                        <div class="dpi-checkbox-row">
+                            <label>
+                                <input type="checkbox" name="dpi_notify_new_comments" value="1" <?php checked($notify_comments); ?>>
+                                Email me when someone comments on my posts
+                            </label>
+                        </div>
+
+                        <button type="submit" id="dpi-save-author-btn" class="dpi-btn-primary">Save Author Settings</button>
+                    </form>
+                </div>
+                <?php endif; ?>
+
             </div>
         </div>
         <?php return ob_get_clean();
     }
-
-    // ---------------------------------------------------------------
-    // Item Renderers
-    // ---------------------------------------------------------------
 
     private function render_item( $act ) {
         $type    = $act['type'];
@@ -263,6 +351,8 @@ class DevProfileInsightsPro {
             );
         } elseif ( $type === 'reply' ) {
             printf( '<a href="%s" class="dpi-item dpi-reply"><span class="dpi-badge">💬 Reply received</span><strong>%s</strong><small>"%s"</small></a>', $link, $title, $snippet );
+        } elseif ( $type === 'author_comment' ) {
+            printf( '<a href="%s" class="dpi-item dpi-author-comment"><span class="dpi-badge" style="color:#a855f7;">📢 Comment on your post</span><strong>%s</strong><small>"%s"</small></a>', $link, $title, $snippet );
         } else {
             printf( '<a href="%s" class="dpi-item"><span class="dpi-badge">📝 Comment</span><strong>%s</strong><small>"%s"</small></a>', $link, $title, $snippet );
         }
@@ -278,10 +368,6 @@ class DevProfileInsightsPro {
     private function render_rated( $r ) {
         printf( '<a href="%s" class="dpi-item">⭐ %s</a>', esc_url( get_permalink( (int) $r->post_id ) ), esc_html( get_the_title( (int) $r->post_id ) ) );
     }
-
-    // ---------------------------------------------------------------
-    // AJAX Endpoints
-    // ---------------------------------------------------------------
 
     public function ajax_load_more() {
         check_ajax_referer( 'dpi_nonce', 'nonce' );
@@ -319,10 +405,16 @@ class DevProfileInsightsPro {
         $user_id = get_current_user_id();
         if ( ! $user_id ) wp_send_json_error( 'Not logged in.' );
 
+        if ( isset( $_POST['dpi_author_settings_submitted'] ) && current_user_can( 'edit_posts' ) ) {
+            $notify_comments = isset( $_POST['dpi_notify_new_comments'] ) ? '1' : '0';
+            update_user_meta( $user_id, 'dpi_notify_new_comments', $notify_comments );
+            wp_send_json_success( 'Author settings updated successfully!' );
+        }
+
         $user_data = [ 'ID' => $user_id ];
-        
-        // Handle generic profile fields
         $fields = [ 'first_name', 'last_name', 'display_name', 'user_email', 'user_url' ];
+        $needs_update = false;
+
         foreach ( $fields as $field ) {
             if ( isset( $_POST[$field] ) ) {
                 $val = sanitize_text_field( wp_unslash( $_POST[$field] ) );
@@ -334,14 +426,15 @@ class DevProfileInsightsPro {
                     }
                 }
                 $user_data[$field] = $val;
+                $needs_update = true;
             }
         }
 
         if ( isset( $_POST['description'] ) ) {
             $user_data['description'] = sanitize_textarea_field( wp_unslash( $_POST['description'] ) );
+            $needs_update = true;
         }
 
-        // Handle security (password change)
         $new_pass = trim( wp_unslash( $_POST['new_password'] ?? '' ) );
         if ( ! empty( $new_pass ) ) {
             if ( $this->get_pw_attempts( $user_id ) >= $this->pw_max_attempts ) {
@@ -352,20 +445,18 @@ class DevProfileInsightsPro {
             }
             $this->increment_pw_attempts( $user_id );
             $user_data['user_pass'] = $new_pass;
+            $needs_update = true;
         }
 
-        $result = wp_update_user( $user_data );
-
-        if ( is_wp_error( $result ) ) {
-            wp_send_json_error( $result->get_error_message() );
+        if ( $needs_update ) {
+            $result = wp_update_user( $user_data );
+            if ( is_wp_error( $result ) ) {
+                wp_send_json_error( $result->get_error_message() );
+            }
         }
 
         wp_send_json_success( 'Profile updated successfully!' . ( ! empty( $new_pass ) ? ' Logging you out…' : '' ) );
     }
-
-    // ---------------------------------------------------------------
-    // CSS & JS
-    // ---------------------------------------------------------------
 
     private function get_css() { return '
         .dpi-wrap { max-width: auto; margin: 20px auto; border: 1px solid rgba(128,128,128,.2); border-radius: 18px; overflow: hidden; font-family: system-ui,sans-serif; color: inherit; background: rgba(128,128,128,.04); }
@@ -379,9 +470,8 @@ class DevProfileInsightsPro {
         .dpi-stat strong { display: block; font-size: 1.25rem; color: #6366f1; }
         .dpi-stat span   { font-size: .58rem; text-transform: uppercase; opacity: .55; font-weight: 700; }
         
-        /* Tabs */
         .dpi-tabs { display: flex; background: rgba(128,128,128,.05); border-bottom: 1px solid rgba(128,128,128,.15); overflow-x: auto; }
-        .dpi-tab-btn { flex: 1; padding: 14px; background: transparent; border: none; font-size: 0.85rem; font-weight: 600; color: inherit; cursor: pointer; opacity: 0.6; transition: all 0.2s; border-bottom: 2px solid transparent; white-space: nowrap; }
+        .dpi-tab-btn { flex: 1; padding: 14px; background: transparent; border: none; font-size: 0.85rem; font-weight: 600; color: inherit; cursor: pointer; opacity: 0.6; transition: all 0.1s; border-bottom: 2px solid transparent; white-space: nowrap; }
         .dpi-tab-btn:hover { opacity: 1; background: rgba(128,128,128,.05); }
         .dpi-tab-btn.active { opacity: 1; border-bottom-color: #6366f1; color: #6366f1; }
         .dpi-tab-content { display: none; }
@@ -398,11 +488,11 @@ class DevProfileInsightsPro {
         .dpi-reply   { border-left-color: #3b82f6; }
         .dpi-like    { border-left-color: #10b981; }
         .dpi-dislike { border-left-color: #ef4444; }
+        .dpi-author-comment { border-left-color: #a855f7; }
         .dpi-empty { opacity: .4; font-size: .83rem; padding: 8px 0; }
         .dpi-more { width: 100%; padding: 9px; background: transparent; border: 1px dashed rgba(128,128,128,.3); border-radius: 9px; cursor: pointer; color: inherit; font-size: .78rem; margin: 2px 0 18px; }
         .dpi-more:hover:not(:disabled) { border-color: #6366f1; color: #6366f1; }
         
-        /* Forms */
         .dpi-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
         .dpi-form-grid input, .dpi-form-grid textarea, .dpi-pw-row input { width: 100%; box-sizing: border-box; background: rgba(128,128,128,.09); border: 1px solid rgba(128,128,128,.2); padding: 10px 14px; border-radius: 7px; color: inherit; font-size: .88rem; font-family: inherit; }
         .dpi-form-grid input:focus, .dpi-form-grid textarea:focus, .dpi-pw-row input:focus { outline: none; border-color: #6366f1; }
@@ -411,6 +501,9 @@ class DevProfileInsightsPro {
         .dpi-btn-primary:hover { opacity: 0.9; }
         .dpi-btn-primary:disabled { opacity: .5; cursor: default; }
         .dpi-pw-limit { font-size: .72rem; opacity: .4; margin: 6px 0 0; }
+        .dpi-checkbox-row { margin-bottom: 15px; font-size: 0.9rem; }
+        .dpi-checkbox-row label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .dpi-checkbox-row input[type="checkbox"] { width: auto; transform: scale(1.1); cursor: pointer; }
         @media (max-width: 600px) { .dpi-form-grid { grid-template-columns: 1fr; } }
     '; }
 
@@ -422,7 +515,6 @@ class DevProfileInsightsPro {
             if(!wrap) return;
             const nonce = wrap.dataset.nonce;
             const ajax  = <?php echo wp_json_encode( admin_url('admin-ajax.php') ); ?>;
-            const bye   = <?php echo wp_json_encode( wp_logout_url( home_url() ) ); ?>;
 
             function post(data){
                 const fd = new FormData();
@@ -430,7 +522,6 @@ class DevProfileInsightsPro {
                 return fetch(ajax, {method:'POST', body:fd}).then(r => r.json());
             }
 
-            // Tab Switcher Logic
             const tabBtns = wrap.querySelectorAll('.dpi-tab-btn');
             const tabContents = wrap.querySelectorAll('.dpi-tab-content');
 
@@ -445,7 +536,6 @@ class DevProfileInsightsPro {
                 });
             });
 
-            // Load More
             wrap.addEventListener('click', function(e){
                 const btn = e.target.closest('.dpi-more');
                 if(!btn || btn.disabled) return;
@@ -453,61 +543,43 @@ class DevProfileInsightsPro {
                 const page = parseInt(btn.dataset.page, 10) + 1;
                 btn.disabled = true;
                 btn.textContent = 'Loading…';
-                post({action:'dpi_load_more', nonce, type, page}).then(res => {
-                    if(res.success && res.data.html){
-                        const id = type === 'comments' ? 'dpi-comments-list' : (type === 'subs' ? 'dpi-subs-list' : 'dpi-rated-list');
-                        document.getElementById(id).insertAdjacentHTML('beforeend', res.data.html);
+                
+                post({ action:'dpi_load_more', nonce, type, page }).then(res => {
+                    if(res.success){
+                        document.getElementById('dpi-' + (type==='comments'?'comments':(type==='subs'?'subs':'rated')) + '-list').insertAdjacentHTML('beforeend', res.data.html);
                         btn.dataset.page = page;
+                        if(!res.data.has_more) btn.remove();
+                        else { btn.disabled = false; btn.textContent = 'Load More'; }
                     }
-                    if(!res.success || !res.data.has_more){
-                        btn.remove();
-                    } else {
-                        btn.disabled = false;
-                        btn.textContent = 'Load More';
-                    }
-                }).catch(() => { btn.disabled = false; btn.textContent = 'Retry'; });
+                });
             });
 
-            // Save Profile Form
-            const profileForm = document.getElementById('dpi-profile-form');
-            if(profileForm) {
-                profileForm.addEventListener('submit', function(e){
+            const forms = ['dpi-profile-form', 'dpi-author-settings-form'];
+            forms.forEach(id => {
+                const f = document.getElementById(id);
+                if(!f) return;
+                f.addEventListener('submit', e => {
                     e.preventDefault();
-                    const btn = document.getElementById('dpi-save-btn');
-                    const fd = new FormData(profileForm);
-                    
-                    const passInput = fd.get('new_password');
-                    if(passInput && passInput.length > 0 && passInput.length < 8){ 
-                        alert('Password must be at least 8 characters.'); 
-                        return; 
-                    }
-
+                    const btn = f.querySelector('button[type="submit"]');
                     btn.disabled = true;
-                    btn.textContent = 'Saving...';
-                    
-                    const data = { action: 'dpi_update_profile', nonce: nonce };
-                    fd.forEach((value, key) => data[key] = value);
+                    const fd = new FormData(f);
+                    fd.append('action', 'dpi_update_profile');
+                    fd.append('nonce', nonce);
 
-                    post(data).then(res => {
-                        if(res.success){
-                            Swal.fire('Saved!', res.data, 'success').then(() => {
-                                if(passInput) location.href = bye;
-                            });
-                        } else {
-                            Swal.fire('Error', res.data, 'error');
-                        }
-                    }).catch(() => { 
-                        Swal.fire('Error', 'Connection failed. Please try again.', 'error'); 
-                    }).finally(() => {
+                    fetch(ajax, {method:'POST', body:fd}).then(r => r.json()).then(res => {
+                        Swal.fire({ 
+                            icon: res.success ? 'success' : 'error', 
+                            text: res.data,
+                            toast: true, position: 'top-end', showConfirmButton: false, timer: 3000
+                        });
+                        if(res.success && res.data.includes('logout')) setTimeout(() => location.reload(), 2000);
                         btn.disabled = false;
-                        btn.textContent = 'Save Profile Settings';
                     });
                 });
-            }
+            });
         })();
         </script>
         <?php
     }
 }
-
 new DevProfileInsightsPro();
