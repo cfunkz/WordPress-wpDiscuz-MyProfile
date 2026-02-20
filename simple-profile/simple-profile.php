@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Profile Insights Pro
  * Description: User dashboard with Karma, AJAX pagination, wpDiscuz Subscriptions, Author Stats, and Profile Editing.
- * Version:     4.5
+ * Version:     4.6
  * Author:      cFunkz
  */
 
@@ -10,14 +10,14 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class DevProfileInsightsPro {
 
-    private $per_page           = 6;
+    private $per_page            = 6;
     private $pw_max_attempts     = 3;    // max password changes per window
     private $pw_window_seconds   = 3600; // 1 hour
     private $stamping_vote       = false; // re-entrancy guard for stamp_vote_time
 
     public function __construct() {
-        add_shortcode( 'user_insights',             [ $this, 'render_shortcode' ] );
-        add_action(    'wp_enqueue_scripts',          [ $this, 'enqueue_assets' ] );
+        add_shortcode( 'user_insights',           [ $this, 'render_shortcode' ] );
+        add_action(    'wp_enqueue_scripts',      [ $this, 'enqueue_assets' ] );
         add_action(    'wp_ajax_dpi_load_more',       [ $this, 'ajax_load_more' ] );
         add_action(    'wp_ajax_dpi_update_profile',  [ $this, 'ajax_update_profile' ] );
 
@@ -27,11 +27,21 @@ class DevProfileInsightsPro {
 
         // Enforce Author Notification Settings (WordPress Core Hook)
         add_filter( 'notify_post_author', [ $this, 'enforce_comment_notifications' ], 10, 2 );
+
+        // Add custom social links to WP's built-in contact methods
+        add_filter( 'user_contactmethods', [ $this, 'add_custom_contact_methods' ] );
     }
 
     // ---------------------------------------------------------------
-    // Author Setting Hooks
+    // Author & User Setting Hooks
     // ---------------------------------------------------------------
+
+    public function add_custom_contact_methods( $methods ) {
+        // Add specific networks. Themes/SEO plugins may already add others.
+        $methods['linkedin'] = 'LinkedIn URL';
+        $methods['github']   = 'GitHub URL';
+        return $methods;
+    }
 
     public function enforce_comment_notifications( $maybe_notify, $comment_id ) {
         $comment = get_comment( $comment_id );
@@ -206,6 +216,9 @@ class DevProfileInsightsPro {
         
         $is_author     = current_user_can( 'edit_posts' );
 
+        // Dynamically get standard WP user contact methods + any added via plugins
+        $contact_methods = wp_get_user_contact_methods( $user );
+
         ob_start(); ?>
         <div class="dpi-wrap" id="dpi-profile" data-nonce="<?php echo esc_attr( wp_create_nonce( 'dpi_nonce' ) ); ?>">
 
@@ -283,6 +296,15 @@ class DevProfileInsightsPro {
                             <textarea name="description" placeholder="Biographical Info..." rows="3" style="grid-column: 1 / -1;"><?php echo esc_textarea($user->description); ?></textarea>
                         </div>
                         
+                        <?php if ( ! empty( $contact_methods ) ) : ?>
+                            <h4 class="dpi-sec-label" style="margin-top: 24px;">Social & Contact Links</h4>
+                            <div class="dpi-form-grid">
+                                <?php foreach ( $contact_methods as $method_key => $method_label ) : ?>
+                                    <input type="text" name="<?php echo esc_attr( $method_key ); ?>" placeholder="<?php echo esc_attr( $method_label ); ?>" value="<?php echo esc_attr( get_user_meta( $user->ID, $method_key, true ) ); ?>">
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+
                         <h4 class="dpi-sec-label" style="margin-top: 24px;">Security Settings</h4>
                         <div class="dpi-pw-row">
                             <input type="password" name="new_password" placeholder="New password (min 8 chars, optional)" autocomplete="new-password">
@@ -415,6 +437,7 @@ class DevProfileInsightsPro {
         $fields = [ 'first_name', 'last_name', 'display_name', 'user_email', 'user_url' ];
         $needs_update = false;
 
+        // Process Core Fields
         foreach ( $fields as $field ) {
             if ( isset( $_POST[$field] ) ) {
                 $val = sanitize_text_field( wp_unslash( $_POST[$field] ) );
@@ -433,6 +456,16 @@ class DevProfileInsightsPro {
         if ( isset( $_POST['description'] ) ) {
             $user_data['description'] = sanitize_textarea_field( wp_unslash( $_POST['description'] ) );
             $needs_update = true;
+        }
+
+        // Process Custom Contact Methods dynamically
+        $contact_methods = wp_get_user_contact_methods( get_userdata( $user_id ) );
+        foreach ( $contact_methods as $method_key => $method_label ) {
+            if ( isset( $_POST[$method_key] ) ) {
+                // Update specific meta individually
+                $val = sanitize_text_field( wp_unslash( $_POST[$method_key] ) );
+                update_user_meta( $user_id, $method_key, $val );
+            }
         }
 
         $new_pass = trim( wp_unslash( $_POST['new_password'] ?? '' ) );
@@ -572,7 +605,7 @@ class DevProfileInsightsPro {
                             text: res.data,
                             toast: true, position: 'top-end', showConfirmButton: false, timer: 3000
                         });
-                        if(res.success && res.data.includes('logout')) setTimeout(() => location.reload(), 2000);
+                        if(res.success && typeof res.data === 'string' && res.data.includes('logout')) setTimeout(() => location.reload(), 2000);
                         btn.disabled = false;
                     });
                 });
