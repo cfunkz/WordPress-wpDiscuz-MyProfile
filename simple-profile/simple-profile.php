@@ -303,7 +303,7 @@ class DevProfileInsightsPro {
                 <div id="dpi-tab-author-settings" class="dpi-tab-content">
                     
                     <div class="dpi-author-stats-box" style="margin-bottom: 24px; padding: 18px; background: rgba(99,102,241,0.08); border-radius: 10px; border: 1px solid rgba(99,102,241,0.2);">
-                        <h4 class="dpi-sec-label" style="margin-bottom: 12px;">Your Writing Statistics</h4>
+                        <h4 class="dpi-sec-label" style="margin-bottom: 12px; #6366f1;">Your Writing Statistics</h4>
                         <div class="dpi-stats" style="border-bottom: none;">
                             <div class="dpi-stat"><strong><?php echo esc_html( $total_posts ); ?></strong><span>Total Posts</span></div>
                             <div class="dpi-stat"><strong><?php echo esc_html( number_format($word_count) ); ?></strong><span>Words Written</span></div>
