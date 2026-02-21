@@ -1,2 +1,3 @@
 Download the [Release with .zip file](https://github.com/cfunkz/WordPress-wpDiscuz-MyProfile/releases), upload to plugins, make a page and paste the shortcode `[user_insights]`
-<img width="362" height="484" alt="image" src="https://github.com/user-attachments/assets/83ca8901-51ad-49c0-be7b-802f5ea4c20a" />
+<img width="639" height="929" alt="image" src="https://github.com/user-attachments/assets/0baad872-b08d-493e-9875-3682fd83e3f0" />
+
