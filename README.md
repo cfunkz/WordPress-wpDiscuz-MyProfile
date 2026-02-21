@@ -1,4 +1,4 @@
-## Profile Insights Pro
+## Profile Insights
 
 User dashboard plugin for WordPress with Karma tracking, wpDiscuz subscriptions, ratings, notifications, author statistics, and front-end profile editing.
 
